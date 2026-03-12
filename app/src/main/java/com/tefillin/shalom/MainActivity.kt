@@ -1,622 +1,324 @@
-package com.watchchat.app
+package com.spacedodge.watch
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.wear.compose.material.*
-import kotlinx.coroutines.*
-import org.java_websocket.client.WebSocketClient
-import org.java_websocket.handshake.ServerHandshake
-import org.json.JSONArray
-import org.json.JSONObject
-import java.net.URI
+import androidx.wear.compose.material.Button
+import androidx.wear.compose.material.ButtonDefaults
+import androidx.wear.compose.material.Text
+import kotlinx.coroutines.delay
+import kotlin.random.Random
 
-// =============================================
-// שנה את הכתובת לאחר העלאה ל-Render
-// =============================================
-const val SERVER_URL = "wss://snv-9lmr.onrender.com"
+// ─── קבועים ───────────────────────────────────────
+const val SCREEN_SIZE   = 200f   // גודל אזור המשחק (dp מדומה)
+const val SHIP_SIZE     = 10f
+const val OBSTACLE_W    = 18f
+const val OBSTACLE_H    = 12f
+const val STAR_COUNT    = 30
+const val GAME_TICK_MS  = 30L    // ~33fps
 
-enum class Screen { ROOMS, CHAT, NEW_ROOM, EMOJI_PICKER }
+enum class GameState { MENU, PLAYING, DEAD }
 
-data class ChatMessage(
-    val from: String,
-    val text: String,
-    val time: String,
-    val isSystem: Boolean = false,
-    val isMine: Boolean = false
-)
-
-data class Room(val name: String, val count: Int)
+data class Obstacle(val x: Float, val y: Float)
+data class Star(val x: Float, val y: Float, val size: Float, val speed: Float)
+data class Explosion(val x: Float, val y: Float, var frame: Int = 0)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent {
-            WatchChatApp()
-        }
+        setContent { SpaceDodgeGame() }
     }
 }
 
 @Composable
-fun WatchChatApp() {
-    var screen by remember { mutableStateOf(Screen.ROOMS) }
-    var nickname by remember { mutableStateOf("") }
-    var currentRoom by remember { mutableStateOf("") }
-    var rooms by remember { mutableStateOf(listOf<Room>()) }
-    var messages by remember { mutableStateOf(listOf<ChatMessage>()) }
-    var inputText by remember { mutableStateOf("") }
-    var wsClient by remember { mutableStateOf<WebSocketClient?>(null) }
-    var connected by remember { mutableStateOf(false) }
+fun SpaceDodgeGame() {
+    var gameState   by remember { mutableStateOf(GameState.MENU) }
+    var shipX       by remember { mutableStateOf(100f) }
+    var shipY       by remember { mutableStateOf(160f) }
+    var obstacles   by remember { mutableStateOf(listOf<Obstacle>()) }
+    var score       by remember { mutableStateOf(0) }
+    var highScore   by remember { mutableStateOf(0) }
+    var stars       by remember { mutableStateOf(generateStars()) }
+    var explosion   by remember { mutableStateOf<Explosion?>(null) }
+    var speed       by remember { mutableStateOf(3f) }
+    var tick        by remember { mutableStateOf(0) }
 
-    val scope = rememberCoroutineScope()
+    // ─── Game loop ───────────────────────────────
+    LaunchedEffect(gameState) {
+        if (gameState != GameState.PLAYING) return@LaunchedEffect
 
-    // Connect to WebSocket
-    LaunchedEffect(Unit) {
-        scope.launch(Dispatchers.IO) {
-            try {
-                val client = object : WebSocketClient(URI(SERVER_URL)) {
-                    override fun onOpen(handshakedata: ServerHandshake?) {
-                        connected = true
-                    }
+        // אתחול
+        shipX = 100f; shipY = 160f
+        obstacles = listOf()
+        score = 0; speed = 3f; tick = 0
 
-                    override fun onMessage(message: String?) {
-                        message ?: return
-                        try {
-                            val json = JSONObject(message)
-                            when (json.getString("type")) {
-                                "welcome" -> {
-                                    nickname = json.getString("nickname")
-                                    val roomsArr = json.getJSONArray("rooms")
-                                    rooms = parseRooms(roomsArr)
-                                }
-                                "room_list" -> {
-                                    val roomsArr = json.getJSONArray("rooms")
-                                    rooms = parseRooms(roomsArr)
-                                }
-                                "joined" -> {
-                                    currentRoom = json.getString("room")
-                                    messages = listOf()
-                                    screen = Screen.CHAT
-                                }
-                                "message" -> {
-                                    val from = json.getString("from")
-                                    val text = json.getString("text")
-                                    val time = json.getString("time")
-                                    messages = messages + ChatMessage(
-                                        from = from,
-                                        text = text,
-                                        time = time,
-                                        isMine = from == nickname
-                                    )
-                                }
-                                "system" -> {
-                                    messages = messages + ChatMessage(
-                                        from = "מערכת",
-                                        text = json.getString("text"),
-                                        time = "",
-                                        isSystem = true
-                                    )
-                                }
-                            }
-                        } catch (e: Exception) {
-                            e.printStackTrace()
-                        }
-                    }
+        while (gameState == GameState.PLAYING) {
+            delay(GAME_TICK_MS)
+            tick++
 
-                    override fun onClose(code: Int, reason: String?, remote: Boolean) {
-                        connected = false
-                    }
+            // הזז כוכבים
+            stars = stars.map { s ->
+                val ny = s.y + s.speed
+                if (ny > SCREEN_SIZE) s.copy(y = 0f, x = Random.nextFloat() * SCREEN_SIZE)
+                else s.copy(y = ny)
+            }
 
-                    override fun onError(ex: Exception?) {
-                        connected = false
-                    }
-                }
-                client.connect()
-                wsClient = client
-            } catch (e: Exception) {
-                e.printStackTrace()
+            // הזז מכשולים
+            val moved = obstacles.map { it.copy(y = it.y + speed) }
+                .filter { it.y < SCREEN_SIZE + OBSTACLE_H }
+            obstacles = moved
+
+            // הוסף מכשול
+            val spawnRate = maxOf(20, 60 - score / 5)
+            if (tick % spawnRate == 0) {
+                val nx = Random.nextFloat() * (SCREEN_SIZE - OBSTACLE_W)
+                obstacles = obstacles + Obstacle(nx, -OBSTACLE_H)
+            }
+
+            // עלה מהירות
+            speed = 3f + score * 0.05f
+
+            // עלה ניקוד
+            if (tick % 20 == 0) score++
+
+            // בדוק התנגשות
+            val hit = obstacles.any { obs ->
+                shipX + SHIP_SIZE > obs.x &&
+                shipX - SHIP_SIZE < obs.x + OBSTACLE_W &&
+                shipY + SHIP_SIZE > obs.y &&
+                shipY - SHIP_SIZE < obs.y + OBSTACLE_H
+            }
+
+            if (hit) {
+                explosion = Explosion(shipX, shipY)
+                if (score > highScore) highScore = score
+                gameState = GameState.DEAD
             }
         }
     }
 
-    fun sendMessage(text: String) {
-        wsClient?.send(JSONObject().apply {
-            put("type", "message")
-            put("text", text)
-        }.toString())
+    // ─── אנימציית פיצוץ ─────────────────────────
+    LaunchedEffect(gameState) {
+        if (gameState != GameState.DEAD) return@LaunchedEffect
+        repeat(12) {
+            delay(50)
+            explosion = explosion?.copy(frame = (explosion?.frame ?: 0) + 1)
+        }
     }
-
-    fun joinRoom(roomName: String) {
-        wsClient?.send(JSONObject().apply {
-            put("type", "join")
-            put("room", roomName)
-        }.toString())
-    }
-
-    fun createRoom(roomName: String) {
-        wsClient?.send(JSONObject().apply {
-            put("type", "create_room")
-            put("room", roomName)
-        }.toString())
-    }
-
-    fun refreshRooms() {
-        wsClient?.send(JSONObject().apply {
-            put("type", "get_rooms")
-        }.toString())
-    }
-
-    val bgColor = Color(0xFF0A0A1A)
-
-    when (screen) {
-        Screen.ROOMS -> RoomsScreen(
-            rooms = rooms,
-            nickname = nickname,
-            connected = connected,
-            onJoin = { joinRoom(it) },
-            onNewRoom = { screen = Screen.NEW_ROOM },
-            onRefresh = { refreshRooms() }
-        )
-        Screen.CHAT -> ChatScreen(
-            messages = messages,
-            roomName = currentRoom,
-            nickname = nickname,
-            inputText = inputText,
-            onInputChange = { inputText = it },
-            onSend = {
-                if (inputText.isNotBlank()) {
-                    sendMessage(inputText)
-                    inputText = ""
-                }
-            },
-            onBack = {
-                screen = Screen.ROOMS
-                refreshRooms()
-            },
-            onEmojiPicker = { screen = Screen.EMOJI_PICKER }
-        )
-        Screen.NEW_ROOM -> NewRoomScreen(
-            onCreate = { name ->
-                createRoom(name)
-                joinRoom(name)
-            },
-            onBack = { screen = Screen.ROOMS }
-        )
-        Screen.EMOJI_PICKER -> EmojiPickerScreen(
-            onPick = { emoji ->
-                inputText += emoji
-                screen = Screen.CHAT
-            },
-            onBack = { screen = Screen.CHAT }
-        )
-    }
-}
-
-fun parseRooms(arr: JSONArray): List<Room> {
-    val list = mutableListOf<Room>()
-    for (i in 0 until arr.length()) {
-        val obj = arr.getJSONObject(i)
-        list.add(Room(obj.getString("name"), obj.getInt("count")))
-    }
-    return list
-}
-
-@Composable
-fun RoomsScreen(
-    rooms: List<Room>,
-    nickname: String,
-    connected: Boolean,
-    onJoin: (String) -> Unit,
-    onNewRoom: () -> Unit,
-    onRefresh: () -> Unit
-) {
-    val bgColor = Color(0xFF0A0A2E)
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(bgColor)
+            .background(Color(0xFF000814)),
+        contentAlignment = Alignment.Center
     ) {
-        Column(
+        when (gameState) {
+            GameState.MENU -> MenuScreen(highScore) { gameState = GameState.PLAYING }
+            GameState.DEAD -> DeadScreen(score, highScore) { gameState = GameState.PLAYING }
+            GameState.PLAYING -> {
+                GameCanvas(
+                    shipX = shipX,
+                    shipY = shipY,
+                    obstacles = obstacles,
+                    stars = stars,
+                    explosion = explosion,
+                    score = score,
+                    onTapLeft  = { shipX = (shipX - 20f).coerceIn(SHIP_SIZE, SCREEN_SIZE - SHIP_SIZE) },
+                    onTapRight = { shipX = (shipX + 20f).coerceIn(SHIP_SIZE, SCREEN_SIZE - SHIP_SIZE) }
+                )
+            }
+        }
+    }
+}
+
+// ─── מסך משחק ─────────────────────────────────────
+@Composable
+fun GameCanvas(
+    shipX: Float, shipY: Float,
+    obstacles: List<Obstacle>,
+    stars: List<Star>,
+    explosion: Explosion?,
+    score: Int,
+    onTapLeft: () -> Unit,
+    onTapRight: () -> Unit
+) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Canvas(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 8.dp, vertical = 12.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+                .pointerInput(Unit) {
+                    detectTapGestures { offset ->
+                        if (offset.x < size.width / 2) onTapLeft() else onTapRight()
+                    }
+                }
         ) {
-            // Header
-            Text(
-                text = "💬 WatchChat",
-                color = Color(0xFFFFD700),
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Bold,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth()
-            )
+            val scaleX = size.width  / SCREEN_SIZE
+            val scaleY = size.height / SCREEN_SIZE
 
-            Text(
-                text = if (connected) "✅ $nickname" else "❌ לא מחובר",
-                color = if (connected) Color(0xFF4ADE80) else Color(0xFFFF6B6B),
-                fontSize = 10.sp,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.padding(bottom = 8.dp)
-            )
+            fun sx(v: Float) = v * scaleX
+            fun sy(v: Float) = v * scaleY
 
-            if (rooms.isEmpty()) {
-                Text(
-                    text = "אין חדרים עדיין",
-                    color = Color(0xFF888888),
-                    fontSize = 12.sp,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(vertical = 8.dp)
+            // כוכבים
+            stars.forEach { s ->
+                drawCircle(
+                    color = Color.White.copy(alpha = 0.4f + s.size * 0.2f),
+                    radius = s.size * scaleX,
+                    center = Offset(sx(s.x), sy(s.y))
                 )
-            } else {
-                rooms.forEach { room ->
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 3.dp)
-                            .background(Color(0xFF1A1A4A))
-                            .clickable { onJoin(room.name) }
-                            .padding(vertical = 10.dp, horizontal = 8.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = room.name,
-                                color = Color.White,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = "👥 ${room.count}",
-                                color = Color(0xFF60A5FA),
-                                fontSize = 11.sp
-                            )
-                        }
-                    }
-                }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Buttons
-            Button(
-                onClick = onNewRoom,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 4.dp),
-                colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFF1E3A8A))
-            ) {
-                Text(text = "+ חדר חדש", color = Color.White, fontSize = 12.sp)
+            // מכשולים — אסטרואידים
+            obstacles.forEach { obs ->
+                drawAsteroid(sx(obs.x), sy(obs.y), sx(OBSTACLE_W), sy(OBSTACLE_H))
             }
 
-            Spacer(modifier = Modifier.height(4.dp))
-
-            Button(
-                onClick = onRefresh,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 4.dp),
-                colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFF1A2A3A))
-            ) {
-                Text(text = "🔄 רענן", color = Color(0xFF60A5FA), fontSize = 12.sp)
+            // ספינה
+            if (explosion == null || explosion.frame < 3) {
+                drawShip(sx(shipX), sy(shipY), sx(SHIP_SIZE))
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
-        }
-    }
-}
-
-@Composable
-fun ChatScreen(
-    messages: List<ChatMessage>,
-    roomName: String,
-    nickname: String,
-    inputText: String,
-    onInputChange: (String) -> Unit,
-    onSend: () -> Unit,
-    onBack: () -> Unit,
-    onEmojiPicker: () -> Unit
-) {
-    val bgColor = Color(0xFF0A0A1A)
-    val listState = rememberLazyListState()
-
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) {
-            listState.animateScrollToItem(messages.size - 1)
-        }
-    }
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(bgColor)
-    ) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            // Header
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Color(0xFF0A0A2E))
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "◀",
-                    color = Color(0xFF60A5FA),
-                    fontSize = 14.sp,
-                    modifier = Modifier.clickable { onBack() }
-                )
-                Text(
-                    text = roomName,
-                    color = Color(0xFFFFD700),
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(modifier = Modifier.width(16.dp))
-            }
-
-            // Messages
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .padding(horizontal = 6.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-                contentPadding = PaddingValues(vertical = 4.dp)
-            ) {
-                items(messages) { msg ->
-                    if (msg.isSystem) {
-                        Text(
-                            text = msg.text,
-                            color = Color(0xFF888888),
-                            fontSize = 10.sp,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
-                        )
-                    } else {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalAlignment = if (msg.isMine) Alignment.End else Alignment.Start
-                        ) {
-                            if (!msg.isMine) {
-                                Text(
-                                    text = msg.from,
-                                    color = Color(0xFF60A5FA),
-                                    fontSize = 9.sp
-                                )
-                            }
-                            Box(
-                                modifier = Modifier
-                                    .background(
-                                        if (msg.isMine) Color(0xFF1E3A8A) else Color(0xFF1A1A3A)
-                                    )
-                                    .padding(horizontal = 8.dp, vertical = 4.dp)
-                            ) {
-                                Text(
-                                    text = msg.text,
-                                    color = Color.White,
-                                    fontSize = 12.sp
-                                )
-                            }
-                            if (msg.time.isNotEmpty()) {
-                                Text(
-                                    text = msg.time,
-                                    color = Color(0xFF555555),
-                                    fontSize = 8.sp
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Input area
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Color(0xFF0A0A2E))
-                    .padding(horizontal = 4.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                // Emoji button
-                Button(
-                    onClick = onEmojiPicker,
-                    modifier = Modifier.size(32.dp),
-                    colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFF1A1A4A))
-                ) {
-                    Text(text = "😊", fontSize = 12.sp)
-                }
-
-                // Text input (clickable area showing current text)
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(32.dp)
-                        .background(Color(0xFF1A1A3A))
-                        .padding(horizontal = 6.dp),
-                    contentAlignment = Alignment.CenterStart
-                ) {
-                    Text(
-                        text = if (inputText.isEmpty()) "הקלד..." else inputText,
-                        color = if (inputText.isEmpty()) Color(0xFF555555) else Color.White,
-                        fontSize = 11.sp,
-                        maxLines = 1
-                    )
-                }
-
-                // Send button
-                Button(
-                    onClick = onSend,
-                    modifier = Modifier.size(32.dp),
-                    colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFF1E3A8A))
-                ) {
-                    Text(text = "▶", color = Color.White, fontSize = 10.sp)
-                }
-            }
-
-            // Quick messages
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 4.dp, vertical = 2.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                listOf("👍", "אוקי", "בדרך").forEach { quick ->
-                    Box(
-                        modifier = Modifier
-                            .background(Color(0xFF1A1A3A))
-                            .clickable {
-                                onInputChange(quick)
-                            }
-                            .padding(horizontal = 6.dp, vertical = 4.dp)
-                    ) {
-                        Text(text = quick, color = Color(0xFF60A5FA), fontSize = 11.sp)
-                    }
-                }
+            // פיצוץ
+            explosion?.let { exp ->
+                val r = exp.frame * sx(4f)
+                val alpha = 1f - exp.frame / 12f
+                drawCircle(Color(0xFFFF6B00).copy(alpha = alpha), r * 1.2f, Offset(sx(exp.x), sy(exp.y)))
+                drawCircle(Color(0xFFFFD700).copy(alpha = alpha), r * 0.7f, Offset(sx(exp.x), sy(exp.y)))
+                drawCircle(Color.White.copy(alpha = alpha * 0.5f), r * 0.3f, Offset(sx(exp.x), sy(exp.y)))
             }
         }
-    }
-}
 
-@Composable
-fun NewRoomScreen(onCreate: (String) -> Unit, onBack: () -> Unit) {
-    val bgColor = Color(0xFF0A0A2E)
-    var selected by remember { mutableStateOf("") }
+        // ניקוד
+        Text(
+            text = "⭐ $score",
+            color = Color(0xFFFFD700),
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.align(Alignment.TopCenter).padding(top = 6.dp)
+        )
 
-    val suggestions = listOf("כללי", "משפחה", "עבודה", "חברים", "דחוף", "ספורט")
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(bgColor)
-    ) {
-        Column(
+        // רמזי כיוון
+        Row(
             modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 4.dp)
+                .fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text("◀", color = Color(0xFF60A5FA), fontSize = 14.sp,
-                    modifier = Modifier.clickable { onBack() })
-                Text("חדר חדש", color = Color(0xFFFFD700), fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                Spacer(modifier = Modifier.width(16.dp))
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Text("בחר שם:", color = Color(0xFF888888), fontSize = 11.sp)
-
-            Spacer(modifier = Modifier.height(6.dp))
-
-            suggestions.forEach { name ->
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 3.dp)
-                        .background(if (selected == name) Color(0xFF1E3A8A) else Color(0xFF1A1A3A))
-                        .clickable { selected = name }
-                        .padding(vertical = 8.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(text = name, color = Color.White, fontSize = 13.sp)
-                }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            if (selected.isNotEmpty()) {
-                Button(
-                    onClick = { onCreate(selected) },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFF1E3A8A))
-                ) {
-                    Text(text = "צור: $selected", color = Color.White, fontSize = 12.sp)
-                }
-            }
+            Text("◀", color = Color(0xFF60A5FA).copy(alpha = 0.5f), fontSize = 10.sp,
+                modifier = Modifier.padding(start = 8.dp))
+            Text("▶", color = Color(0xFF60A5FA).copy(alpha = 0.5f), fontSize = 10.sp,
+                modifier = Modifier.padding(end = 8.dp))
         }
     }
 }
 
-@Composable
-fun EmojiPickerScreen(onPick: (String) -> Unit, onBack: () -> Unit) {
-    val bgColor = Color(0xFF0A0A2E)
-    val emojis = listOf(
-        "😊", "😂", "❤️", "👍", "👎", "🙏", "🔥", "✅", "❌", "⚠️",
-        "😅", "😭", "😤", "🤔", "😴", "🤩", "😎", "🥳", "😡", "🤗",
-        "👋", "🤝", "💪", "🏃", "🚗", "🏠", "📞", "⏰", "💊", "🆘"
+fun DrawScope.drawShip(cx: Float, cy: Float, s: Float) {
+    // גוף הספינה
+    drawRect(
+        color = Color(0xFF60A5FA),
+        topLeft = Offset(cx - s * 0.4f, cy - s * 0.8f),
+        size = Size(s * 0.8f, s * 1.6f)
     )
+    // כנפיים
+    drawRect(
+        color = Color(0xFF3B82F6),
+        topLeft = Offset(cx - s * 1.1f, cy),
+        size = Size(s * 2.2f, s * 0.6f)
+    )
+    // מנוע להבה
+    drawCircle(Color(0xFFFF6B00), s * 0.35f, Offset(cx, cy + s * 0.9f))
+    drawCircle(Color(0xFFFFD700), s * 0.2f, Offset(cx, cy + s * 0.9f))
+}
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(bgColor)
+fun DrawScope.drawAsteroid(x: Float, y: Float, w: Float, h: Float) {
+    val cx = x + w / 2
+    val cy = y + h / 2
+    drawOval(Color(0xFF6B4226), topLeft = Offset(x, y), size = Size(w, h))
+    drawOval(Color(0xFF8B5E3C), topLeft = Offset(x + w*0.1f, y + h*0.1f), size = Size(w*0.4f, h*0.35f))
+    drawOval(Color(0xFF4A2E14), topLeft = Offset(x + w*0.55f, y + h*0.5f), size = Size(w*0.3f, h*0.3f))
+}
+
+// ─── מסך פתיחה ────────────────────────────────────
+@Composable
+fun MenuScreen(highScore: Int, onStart: () -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(8.dp)
+        Text("🚀", fontSize = 28.sp, textAlign = TextAlign.Center)
+        Text("SPACE\nDODGE",
+            color = Color(0xFF60A5FA), fontSize = 16.sp,
+            fontWeight = FontWeight.Bold, textAlign = TextAlign.Center,
+            lineHeight = 18.sp
+        )
+        Spacer(Modifier.height(4.dp))
+        if (highScore > 0) {
+            Text("שיא: $highScore ⭐", color = Color(0xFFFFD700), fontSize = 10.sp)
+        }
+        Spacer(Modifier.height(8.dp))
+        Button(
+            onClick = onStart,
+            colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFF1E3A8A)),
+            modifier = Modifier.fillMaxWidth(0.75f)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text("◀", color = Color(0xFF60A5FA), fontSize = 14.sp,
-                    modifier = Modifier.clickable { onBack() })
-                Text("בחר אמוג'י", color = Color(0xFFFFD700), fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                Spacer(modifier = Modifier.width(16.dp))
-            }
+            Text("התחל!", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        }
+        Spacer(Modifier.height(4.dp))
+        Text("לחץ שמאל/ימין להזזה", color = Color(0xFF555555), fontSize = 9.sp, textAlign = TextAlign.Center)
+    }
+}
 
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Grid of emojis - 5 per row
-            emojis.chunked(5).forEach { row ->
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly
-                ) {
-                    row.forEach { emoji ->
-                        Box(
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clickable { onPick(emoji) },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(text = emoji, fontSize = 20.sp)
-                        }
-                    }
-                }
-                Spacer(modifier = Modifier.height(4.dp))
-            }
+// ─── מסך מוות ─────────────────────────────────────
+@Composable
+fun DeadScreen(score: Int, highScore: Int, onRestart: () -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text("💥", fontSize = 24.sp)
+        Text("נפגעת!", color = Color(0xFFFF6B6B), fontSize = 15.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(4.dp))
+        Text("ניקוד: $score", color = Color.White, fontSize = 13.sp)
+        if (score >= highScore) {
+            Text("🏆 שיא חדש!", color = Color(0xFFFFD700), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        } else {
+            Text("שיא: $highScore", color = Color(0xFF888888), fontSize = 10.sp)
+        }
+        Spacer(Modifier.height(8.dp))
+        Button(
+            onClick = onRestart,
+            colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFF1E3A8A)),
+            modifier = Modifier.fillMaxWidth(0.75f)
+        ) {
+            Text("שחק שוב!", color = Color.White, fontSize = 12.sp)
         }
     }
+}
+
+// ─── יצירת כוכבים אקראיים ─────────────────────────
+fun generateStars(): List<Star> = List(STAR_COUNT) {
+    Star(
+        x = Random.nextFloat() * SCREEN_SIZE,
+        y = Random.nextFloat() * SCREEN_SIZE,
+        size = Random.nextFloat() * 1.5f + 0.5f,
+        speed = Random.nextFloat() * 1.5f + 0.5f
+    )
 }
