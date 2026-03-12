@@ -6,7 +6,7 @@
 
     <application
         android:allowBackup="true"
-        android:label="אזעקות"
+        android:label="תפילון"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.DeviceDefault">
 
