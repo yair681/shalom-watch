@@ -7,8 +7,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.runtime.Composable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -406,37 +409,80 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MinchaApp() {
     val scrollState = rememberScrollState()
+    var fontSize by remember { mutableStateOf(14) }
+
+    val bgColor = Color(0xFF0A1A4A)
+    val textColor = Color(0xFFFFFFFF)
+    val titleColor = Color(0xFFFFD700)
+    val buttonColor = Color(0xFF1E3A8A)
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black)
+            .background(bgColor)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(scrollState)
-                .padding(horizontal = 12.dp, vertical = 16.dp)
+                .padding(start = 12.dp, end = 12.dp, top = 16.dp, bottom = 80.dp)
         ) {
             Text(
-                text = "מנחה",
-                color = Color(0xFFFFD700),
+                text = "✡ מנחה",
+                color = titleColor,
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Bold,
                 textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp)
             )
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(Color(0xFF3B82F6))
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
 
             Text(
                 text = MINCHA_TEXT,
-                color = Color.White,
-                fontSize = 14.sp,
-                lineHeight = 20.sp,
+                color = textColor,
+                fontSize = fontSize.sp,
+                lineHeight = (fontSize * 1.6).sp,
                 textAlign = TextAlign.Right,
                 modifier = Modifier.fillMaxWidth()
             )
+        }
 
-            Spacer(modifier = Modifier.height(32.dp))
+        Row(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 8.dp)
+                .background(bgColor.copy(alpha = 0.95f))
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Button(
+                onClick = { if (fontSize > 10) fontSize-- },
+                modifier = Modifier.size(36.dp).clip(CircleShape),
+                colors = ButtonDefaults.buttonColors(backgroundColor = buttonColor)
+            ) {
+                Text(text = "א-", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
+
+            Text(text = "$fontSize", color = titleColor, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+
+            Button(
+                onClick = { if (fontSize < 24) fontSize++ },
+                modifier = Modifier.size(36.dp).clip(CircleShape),
+                colors = ButtonDefaults.buttonColors(backgroundColor = buttonColor)
+            ) {
+                Text(text = "א+", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
         }
     }
 }
