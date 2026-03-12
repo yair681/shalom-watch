@@ -8,7 +8,7 @@ android {
     compileSdk 34
 
     defaultConfig {
-        applicationId "com.tefillin.shalom"
+        applicationId "com.tefillin.alert"
         minSdk 30
         targetSdk 34
         versionCode 1
@@ -42,4 +42,7 @@ dependencies {
     implementation 'androidx.compose.ui:ui'
     implementation 'androidx.wear.compose:compose-material:1.3.0'
     implementation 'androidx.wear.compose:compose-foundation:1.3.0'
+    implementation 'androidx.wear.tiles:tiles:1.3.0'
+    implementation 'androidx.wear.tiles:tiles-material:1.3.0'
+    implementation 'com.google.guava:guava:31.0.1-android'
 }
