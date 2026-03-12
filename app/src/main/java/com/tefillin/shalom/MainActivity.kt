@@ -18,10 +18,8 @@ import androidx.compose.ui.unit.sp
 import androidx.wear.compose.material.*
 import kotlinx.coroutines.*
 import org.json.JSONArray
-import org.json.JSONObject
+import java.net.HttpURLConnection
 import java.net.URL
-import java.text.SimpleDateFormat
-import java.util.*
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -36,14 +34,9 @@ data class Alert(val area: String, val time: String)
 fun AlertHistoryApp() {
     var alerts by remember { mutableStateOf<List<Alert>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
-    var status by remember { mutableStateOf("לחץ לטעינה") }
+    var status by remember { mutableStateOf("לחץ רענן") }
     val scope = rememberCoroutineScope()
     val scrollState = rememberScrollState()
-
-    val bgColor = Color(0xFF1A0000)
-    val titleColor = Color(0xFFFFD700)
-    val alertColor = Color(0xFFFF6B6B)
-    val timeColor = Color(0xFFAAAAAA)
 
     fun loadAlerts() {
         scope.launch {
@@ -51,10 +44,22 @@ fun AlertHistoryApp() {
             status = "טוען..."
             val result = withContext(Dispatchers.IO) {
                 try {
-                    // Get recent alerts history
-                    val json = URL("https://www.oref.org.il/WarningMessages/History/AlertsHistory.json")
-                        .readText(Charsets.UTF_8)
-                    if (json.isBlank() || json == "null") return@withContext emptyList()
+                    val url = URL("https://www.oref.org.il/WarningMessages/History/AlertsHistory.json")
+                    val conn = url.openConnection() as HttpURLConnection
+                    conn.requestMethod = "GET"
+                    conn.setRequestProperty("User-Agent", "Mozilla/5.0")
+                    conn.setRequestProperty("Referer", "https://www.oref.org.il/")
+                    conn.setRequestProperty("X-Requested-With", "XMLHttpRequest")
+                    conn.connectTimeout = 10000
+                    conn.readTimeout = 10000
+                    conn.connect()
+
+                    val json = conn.inputStream.bufferedReader(Charsets.UTF_8).readText()
+                    conn.disconnect()
+
+                    if (json.isBlank() || json == "null" || json == "[]") {
+                        return@withContext emptyList<Alert>()
+                    }
                     val arr = JSONArray(json)
                     val list = mutableListOf<Alert>()
                     for (i in 0 until minOf(arr.length(), 20)) {
@@ -68,15 +73,19 @@ fun AlertHistoryApp() {
                     null
                 }
             }
-            if (result == null) {
-                status = "❌ שגיאת חיבור"
-                alerts = emptyList()
-            } else if (result.isEmpty()) {
-                status = "✅ אין אזעקות אחרונות"
-                alerts = emptyList()
-            } else {
-                status = ""
-                alerts = result
+            when {
+                result == null -> {
+                    status = "❌ שגיאת חיבור"
+                    alerts = emptyList()
+                }
+                result.isEmpty() -> {
+                    status = "✅ אין אזעקות אחרונות"
+                    alerts = emptyList()
+                }
+                else -> {
+                    status = ""
+                    alerts = result
+                }
             }
             isLoading = false
         }
@@ -85,7 +94,7 @@ fun AlertHistoryApp() {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(bgColor)
+            .background(Color(0xFF1A0000))
     ) {
         Column(
             modifier = Modifier
@@ -94,22 +103,18 @@ fun AlertHistoryApp() {
                 .padding(horizontal = 8.dp, vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Title
             Text(
                 text = "🚨 אזעקות אחרונות",
-                color = titleColor,
+                color = Color(0xFFFFD700),
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Bold,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
             )
 
-            // Refresh button
             Button(
                 onClick = { loadAlerts() },
-                colors = ButtonDefaults.buttonColors(
-                    backgroundColor = Color(0xFF8B0000)
-                ),
+                colors = ButtonDefaults.buttonColors(backgroundColor = Color(0xFF8B0000)),
                 modifier = Modifier.padding(bottom = 8.dp)
             ) {
                 Text(
@@ -119,7 +124,6 @@ fun AlertHistoryApp() {
                 )
             }
 
-            // Status or alerts
             if (status.isNotEmpty()) {
                 Text(
                     text = status,
@@ -129,7 +133,6 @@ fun AlertHistoryApp() {
                 )
             }
 
-            // Alert list
             alerts.forEach { alert ->
                 Box(
                     modifier = Modifier
@@ -141,7 +144,7 @@ fun AlertHistoryApp() {
                     Column {
                         Text(
                             text = alert.area,
-                            color = alertColor,
+                            color = Color(0xFFFF6B6B),
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             textAlign = TextAlign.Right,
@@ -150,7 +153,7 @@ fun AlertHistoryApp() {
                         if (alert.time.isNotEmpty()) {
                             Text(
                                 text = alert.time,
-                                color = timeColor,
+                                color = Color(0xFFAAAAAA),
                                 fontSize = 10.sp,
                                 textAlign = TextAlign.Right,
                                 modifier = Modifier.fillMaxWidth()
